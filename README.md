@@ -42,7 +42,3 @@ The optional speed test uses `pv` and measures remote-to-local SSH throughput wi
 ## Build
 
 On macOS, Debian or Ubuntu, run `./scripts/build-deb.sh` with Python 3. The package is created in `dist/`. The build contains no personal SSH configuration, credentials, SSH keys or host lists.
-
-## Release
-
-Run `./sshgorel 0.1.1 --branch main --dry` to check release inputs without making changes. Omit `--dry` to build the Debian package, commit release metadata, push to the specified existing remote branch, create a tag, and upload the package to GitHub Releases. The release command requires `git`, `python3`, an authenticated `gh`, a clean checkout and the current commit matching the named remote branch. It creates no local branch.

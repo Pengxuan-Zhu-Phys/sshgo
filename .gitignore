@@ -1,2 +1,4 @@
-dist/
+/dist/
 *.deb
+/sshgorel
+.DS_Store
