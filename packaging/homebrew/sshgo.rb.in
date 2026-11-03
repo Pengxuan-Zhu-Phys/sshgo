@@ -1,0 +1,27 @@
+class Sshgo < Formula
+  desc "SSH connection picker, file transfers, and speed tests"
+  homepage "https://github.com/Pengxuan-Zhu-Phys/sshgo"
+  url "https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v@VERSION@.tar.gz"
+  sha256 "@SHA256@"
+  version "@VERSION@"
+  license "MIT"
+
+  depends_on "zsh"
+  depends_on "pv"
+
+  def install
+    bin.install "src/sshgo"
+    (lib/"sshgo").install "src/sshgo.zsh", "src/sshgo-askpass"
+    (share/"doc/sshgo").install "LICENSE"
+    chmod 0755, lib/"sshgo/sshgo-askpass"
+  end
+
+  test do
+    (testpath/".ssh").mkpath
+    (testpath/".ssh/config").write "Host example\n  HostName example.invalid\n  User testuser\n"
+    with_env(HOME: testpath.to_s) do
+      assert_equal "example\n", shell_output("#{bin}/sshgo --list")
+      assert_match "--download", shell_output("#{bin}/sshgo --help")
+    end
+  end
+end

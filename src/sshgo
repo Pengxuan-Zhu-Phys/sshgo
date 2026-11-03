@@ -1,3 +1,9 @@
-#!/usr/bin/zsh
-source /usr/lib/sshgo/sshgo.zsh
+#!/usr/bin/env zsh
+# Resolve symlinks so Homebrew and /usr package prefixes both work.
+SSHGO_LIBDIR="${0:A:h:h}/lib/sshgo"
+if [[ ! -r "$SSHGO_LIBDIR/sshgo.zsh" ]]; then
+  print -u2 "sshgo: missing library in $SSHGO_LIBDIR"
+  exit 1
+fi
+source "$SSHGO_LIBDIR/sshgo.zsh"
 sshgo "$@"

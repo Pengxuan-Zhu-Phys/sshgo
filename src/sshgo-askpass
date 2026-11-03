@@ -11,4 +11,7 @@ sshgo_expected="${SSHGO_KEYCHAIN_ACCOUNT}@${SSHGO_KEYCHAIN_HOST}'s password: "
 if [ "${1-}" != "$sshgo_expected" ]; then
     exit 1
 fi
+if [ "$(uname -s)" = Darwin ]; then
+    exec /usr/bin/security find-generic-password -a "$SSHGO_KEYCHAIN_ACCOUNT" -s "$SSHGO_KEYCHAIN_SERVICE" -w 2>/dev/null
+fi
 exec secret-tool lookup service "$SSHGO_KEYCHAIN_SERVICE" account "$SSHGO_KEYCHAIN_ACCOUNT" 2>/dev/null

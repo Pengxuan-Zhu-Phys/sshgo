@@ -1,28 +1,37 @@
-# Linux Secret Service backend. Passwords never enter arguments or shell history.
+# Native credential backends. Passwords are never stored in arguments or files.
 _sshgo_secret_exists() {
-  command -v secret-tool >/dev/null 2>&1 || return 1
-  command secret-tool lookup service "$1" account "$2" >/dev/null 2>&1
+  if [[ "$(uname -s)" == Darwin ]]; then
+    /usr/bin/security find-generic-password -a "$2" -s "$1" >/dev/null 2>&1
+  else
+    command -v secret-tool >/dev/null 2>&1 || return 1
+    command secret-tool lookup service "$1" account "$2" >/dev/null 2>&1
+  fi
 }
 _sshgo_secret_store() {
-  if ! command -v secret-tool >/dev/null 2>&1; then
-    _sshgo_ui 2 error 'Password storage needs secret-tool and an unlocked Secret Service keyring.'
-    _sshgo_ui 2 hint 'Install: sudo apt install libsecret-tools; use SSH keys on headless nodes.'
-    return 1
+  if [[ "$(uname -s)" == Darwin ]]; then
+    /usr/bin/security add-generic-password -U -a "$2" -s "$1" -l "sshgo: $2@$3:$4" -w
+  else
+    if ! command -v secret-tool >/dev/null 2>&1; then
+      _sshgo_ui 2 error 'Password storage needs secret-tool and an unlocked Secret Service keyring.'
+      _sshgo_ui 2 hint 'Install libsecret-tools; SSH keys work without a desktop keyring.'
+      return 1
+    fi
+    command secret-tool store --label="sshgo: $2@$3:$4" service "$1" account "$2" || {
+      _sshgo_ui 2 error 'Could not access the Secret Service keyring.'
+      return 1
+    }
   fi
-  command secret-tool store --label="sshgo: $2@$3:$4" service "$1" account "$2" || {
-    _sshgo_ui 2 error 'Could not access the Secret Service keyring. Is a desktop keyring unlocked?'
-    return 1
-  }
 }
 _sshgo_secret_clear() {
-  if ! command -v secret-tool >/dev/null 2>&1; then
-    _sshgo_ui 2 error 'Password storage needs secret-tool.'
-    return 1
+  if [[ "$(uname -s)" == Darwin ]]; then
+    /usr/bin/security delete-generic-password -a "$2" -s "$1"
+  else
+    command -v secret-tool >/dev/null 2>&1 || { _sshgo_ui 2 error 'Password storage needs secret-tool.'; return 1; }
+    command secret-tool clear service "$1" account "$2"
   fi
-  command secret-tool clear service "$1" account "$2"
 }
 
-# Quick SSH connections for zsh. Server passwords can be stored in a Secret Service keyring.
+# Quick SSH connections for zsh. Passwords can be stored in the platform keyring.
 # UI uses stderr except help/list; SSH stdout remains suitable for pipelines.
 _sshgo_ui() {
   local fd="$1" kind="$2"
@@ -102,7 +111,7 @@ sshgo() {
       _sshgo_ui 1 command 'sshgo --manual HOST' 'Connect without a saved password'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'PASSWORDS'
-      _sshgo_ui 1 command 'sshgo --set-password HOST' 'Save or update in the desktop keyring'
+      _sshgo_ui 1 command 'sshgo --set-password HOST' 'Save or update in the system keyring'
       _sshgo_ui 1 command 'sshgo --forget-password HOST' 'Remove the saved password'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'FILE TRANSFER'
@@ -191,7 +200,7 @@ sshgo() {
     fi
     if ! command -v pv >/dev/null 2>&1; then
       _sshgo_ui 2 error 'Speed tests need pv.'
-      _sshgo_ui 2 hint 'Install it with: sudo apt install pv'
+      _sshgo_ui 2 hint 'Install pv with your system package manager.'
       return 1
     fi
     local -a speed_status
@@ -257,7 +266,7 @@ sshgo() {
     save)
       _sshgo_ui 2 header 'Save server password'
       _sshgo_ui 2 field 'Account' "${account}@${hostname}:${port}"
-      _sshgo_ui 2 hint 'Enter the server password below. It is stored in your desktop keyring.'
+      _sshgo_ui 2 hint 'Enter the server password below. It is stored in your system keyring.'
       _sshgo_ui 2 blank
       _sshgo_secret_store "$service" "$account" "$hostname" "$port" || return $?
       _sshgo_ui 2 success 'Password saved.'
@@ -297,7 +306,8 @@ sshgo() {
     local_operand="$local_path"
     [[ "$local_operand" == /* ]] || local_operand="./$local_operand"
     local -a scp_args
-    scp_args=(-r)
+    # OpenSSH 8.9 needs -s; later versions also accept it and default to SFTP.
+    scp_args=(-s -r)
     if [[ "$mode" == download ]]; then
       scp_args+=("$remote_operand" "$local_operand")
     else
@@ -314,11 +324,11 @@ sshgo() {
     fi
     _sshgo_ui 2 blank
     if _sshgo_secret_exists "$service" "$account"; then
-      if [[ ! -x "/usr/lib/sshgo/sshgo-askpass" ]]; then
+      if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
         _sshgo_ui 2 error 'The password helper is missing.'
         return 1
       fi
-      SSH_ASKPASS="/usr/lib/sshgo/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
+      SSH_ASKPASS="$SSHGO_LIBDIR/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
         SSHGO_KEYCHAIN_SERVICE="$service" SSHGO_KEYCHAIN_ACCOUNT="$account" \
         SSHGO_KEYCHAIN_HOST="$hostname" LC_ALL=C \
         command /usr/bin/scp -o StrictHostKeyChecking=yes \
@@ -341,12 +351,12 @@ sshgo() {
   fi
   # Check whether a saved secret is available. OpenSSH uses its askpass interface.
   if _sshgo_secret_exists "$service" "$account"; then
-    if [[ ! -x "/usr/lib/sshgo/sshgo-askpass" ]]; then
+    if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
       _sshgo_ui 2 error 'The password helper is missing.'
       _sshgo_ui 2 hint "Connect manually: sshgo --manual $target"
       return 1
     fi
-    SSH_ASKPASS="/usr/lib/sshgo/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
+    SSH_ASKPASS="$SSHGO_LIBDIR/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
       SSHGO_KEYCHAIN_SERVICE="$service" SSHGO_KEYCHAIN_ACCOUNT="$account" \
       SSHGO_KEYCHAIN_HOST="$hostname" LC_ALL=C \
       command /usr/bin/ssh \
