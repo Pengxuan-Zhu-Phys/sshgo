@@ -1,0 +1,13 @@
+Package: sshgo
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: SSHGo Maintainers <41820848+Pengxuan-Zhu-Phys@users.noreply.github.com>
+Depends: zsh, openssh-client
+Recommends: pv
+Suggests: libsecret-tools
+Description: SSH connection picker and file transfer helper
+ SSHGo provides a server picker, SSH file transfers and speed tests.
+ It reads existing OpenSSH configuration and can optionally use a
+ desktop Secret Service keyring for server passwords.
