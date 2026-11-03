@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 1.0.0 — 2026-11-03
 - License the project under the MIT License.
 
 - Support macOS Keychain and Linux Secret Service through one portable executable.
