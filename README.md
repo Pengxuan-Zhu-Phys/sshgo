@@ -8,7 +8,7 @@ The Debian package can be built on macOS, Ubuntu or Debian with Python 3:
 
 ```sh
 ./scripts/build-deb.sh
-sudo apt install ./dist/sshgo_1.0.0_all.deb
+sudo apt install ./dist/sshgo_1.0.1_all.deb
 ```
 
 Run the `apt install` command on an Ubuntu or Debian machine. A Homebrew tap and a signed APT repository can be prepared as described below; they are not automatically published.
@@ -66,7 +66,7 @@ On Debian or Ubuntu, install `apt-utils`, `dpkg-dev`, `gnupg`, `gzip` and Python
 
 ```sh
 ./scripts/build-deb.sh
-./scripts/build-apt-repo.sh dist/apt-repo YOUR_KEY_FINGERPRINT dist/sshgo_1.0.0_all.deb
+./scripts/build-apt-repo.sh dist/apt-repo YOUR_KEY_FINGERPRINT dist/sshgo_1.0.1_all.deb
 ```
 
 The output path must not already exist. The generated snapshot includes `Packages`, `Release`, `InRelease`, `Release.gpg`, the public key, and the package. Multiple `.deb` arguments preserve multiple package versions in a snapshot. Publish this directory to an HTTPS static host such as GitHub Pages. Configure clients with the verified public key using APT's `signed-by` option; never commit a private signing key. Repository creation, key management, hosting, and deployment are not performed by the build script.
