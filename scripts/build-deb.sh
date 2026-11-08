@@ -42,7 +42,9 @@ def ar_member(name, data):
     if len(fields) != 60: raise SystemExit('[build-deb] Invalid ar header')
     return fields + data + (b'\n' if len(data) % 2 else b'')
 control_tar = tarball({'control': (control, 0o644)})
-data_tar = tarball({name: (path.read_bytes(), mode) for name, (path, mode) in files.items()})
+data_entries = {name: (path.read_bytes(), mode) for name, (path, mode) in files.items()}
+data_entries['usr/lib/sshgo/version'] = (versions[0] + b'\n', 0o644)
+data_tar = tarball(data_entries)
 package = b'!<arch>\n' + ar_member('debian-binary', b'2.0\n') + ar_member('control.tar.xz', control_tar) + ar_member('data.tar.xz', data_tar)
 output.mkdir(parents=True, exist_ok=True)
 path = output / f'sshgo_{version}_all.deb'

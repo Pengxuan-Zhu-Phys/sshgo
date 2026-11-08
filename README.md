@@ -25,12 +25,16 @@ Host example
 sshgo                         # Pick a server
 sshgo --list                  # List servers
 sshgo example                 # Connect
+sshgo show example            # Show effective connection settings
 sshgo --download example /remote/file ~/Downloads/
 sshgo --upload example ./file /remote/directory/
 sshgo --speed example         # Download 10 MiB of test data
 sshgo --speed example 100     # Change the test size in MiB
+sshgo --version               # Show the installed version
 sshgo --help
 ```
+
+`sshgo show HOST` displays selected settings resolved by OpenSSH, such as the hostname, user, port, jump host and identity file paths. It does not display passwords, key contents or arbitrary configured commands. If your SSH alias is named `show`, connect with `sshgo -- show`.
 
 Transfers support files and directories. Existing destination files can be overwritten. `scp -r` follows symbolic links when traversing directories. Quote paths containing spaces or shell metacharacters. Download destinations default to the current local directory; upload destinations default to the remote home directory.
 
@@ -42,14 +46,16 @@ SSH keys and normal interactive SSH password prompts work without a keyring. `ss
 
 When using a saved password, SSHGo requires a previously verified server host key. For a new host, run `sshgo --manual example`, verify its host fingerprint and accept it before using the saved password.
 
-The optional speed test uses `pv` and measures remote-to-local SSH throughput without writing the test data to disk. Measurements include SSH transport overhead.
+Put `--no-keyring` first to skip saved passwords for a single operation, for example `sshgo --no-keyring --download example /remote/file`. This also works for connections, uploads and speed tests, and lets OpenSSH handle authentication normally.
+
+The optional speed test uses `pv` and measures remote-to-local SSH throughput without writing the test data to disk. A test only succeeds if the requested byte count arrives. Measurements include SSH transport overhead.
 
 ## Prepare a Homebrew tap
 
-After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.0.tar.gz`. Then render a formula using the exact downloaded archive:
+After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.1.tar.gz`. Then render a formula using the exact downloaded archive:
 
 ```sh
-python3 scripts/render-homebrew-formula.py 1.0.0 sshgo-1.0.0.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
+python3 scripts/render-homebrew-formula.py 1.0.1 sshgo-1.0.1.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
 ```
 
 Review and publish the formula in your tap. Once published, users can install it with `brew install Pengxuan-Zhu-Phys/tap/sshgo` if the tap repository is named `homebrew-tap`. The renderer embeds the archive's SHA-256; use the archive downloaded from the tag, not a locally generated substitute.

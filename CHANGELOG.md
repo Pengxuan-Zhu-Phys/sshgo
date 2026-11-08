@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `sshgo show HOST` for connection settings and `sshgo --version` for the installed version.
+- Add `--no-keyring` for individual connections, transfers and speed tests.
+- Report invalid command arguments and preserve OpenSSH configuration errors.
+- Fail speed tests if the received byte count differs from the requested size.
+
 ## 1.0.0 — 2026-11-03
 - License the project under the MIT License.
 

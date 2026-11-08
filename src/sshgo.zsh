@@ -32,7 +32,7 @@ _sshgo_secret_clear() {
 }
 
 # Quick SSH connections for zsh. Passwords can be stored in the platform keyring.
-# UI uses stderr except help/list; SSH stdout remains suitable for pipelines.
+# UI uses stderr except help, list, show and version output.
 _sshgo_ui() {
   local fd="$1" kind="$2"
   shift 2
@@ -94,20 +94,59 @@ _sshgo_hosts() {
 
 sshgo() {
   local mode=connect target choice host ssh_config account hostname port service
+  local usage='' installed_version
+  local -i use_keyring=1 pick_host=$(( $# == 0 )) min_args=1 max_args=1
   local -a hosts
+  if [[ "${1-}" == --no-keyring ]]; then
+    use_keyring=0
+    shift
+  fi
   case "${1-}" in
-    --set-password) mode=save; shift ;;
-    --forget-password) mode=forget; shift ;;
-    --manual) mode=manual; shift ;;
-    --speed) mode=speed; shift ;;
-    --download) mode=download; shift ;;
-    --upload) mode=upload; shift ;;
-    -h|--help)
+    --set-password) mode=save; usage='sshgo --set-password HOST' ;;
+    --forget-password) mode=forget; usage='sshgo --forget-password HOST' ;;
+    --manual) mode=manual; usage='sshgo --manual HOST [ssh arguments...]'; max_args=-1 ;;
+    --speed) mode=speed; usage='sshgo [--no-keyring] --speed HOST [MiB]'; max_args=2 ;;
+    --download) mode=download; usage='sshgo [--no-keyring] --download HOST REMOTE [LOCAL]'; min_args=2; max_args=3 ;;
+    --upload) mode=upload; usage='sshgo [--no-keyring] --upload HOST LOCAL [REMOTE]'; min_args=2; max_args=3 ;;
+    show) mode=show; usage='sshgo show HOST' ;;
+    --list) mode=list; usage='sshgo --list'; min_args=0; max_args=0 ;;
+    -h|--help) mode=help; usage='sshgo --help'; min_args=0; max_args=0 ;;
+    -V|--version) mode=version; usage='sshgo --version'; min_args=0; max_args=0 ;;
+  esac
+  if [[ "$mode" != connect || "${1-}" == -- ]]; then
+    shift
+  fi
+  if [[ -n "$usage" ]]; then
+    if (( min_args > 0 && $# == 1 )) && [[ "$1" == (-h|--help) ]]; then
+      printf 'Usage: %s\n' "$usage"
+      return 0
+    fi
+    if (( $# < min_args || ( max_args >= 0 && $# > max_args ) )) ||
+       { (( min_args > 0 )) && [[ -z "${1-}" || "$1" == -* ]]; }; then
+      _sshgo_ui 2 error 'Invalid arguments.'
+      _sshgo_ui 2 hint "Usage: $usage"
+      return 2
+    fi
+  elif (( pick_host )); then
+    if [[ ! -t 0 ]]; then
+      _sshgo_ui 2 error 'The server picker needs an interactive terminal.'
+      _sshgo_ui 2 hint 'Provide a host: sshgo HOST. List aliases: sshgo --list.'
+      return 2
+    fi
+  elif [[ -z "${1-}" ]]; then
+    _sshgo_ui 2 error 'Provide a host name or number.'
+    _sshgo_ui 2 hint 'Usage: sshgo [--no-keyring] HOST [ssh arguments...]'
+    return 2
+  fi
+  case "$mode" in
+    help)
+      printf 'Usage: sshgo [--no-keyring] [HOST [ssh arguments...]]\n'
       _sshgo_ui 1 header 'Your servers, one command.'
       _sshgo_ui 1 section 'CONNECT'
       _sshgo_ui 1 command 'sshgo' 'Choose a server'
       _sshgo_ui 1 command 'sshgo HOST' 'Connect by name or number'
       _sshgo_ui 1 command 'sshgo --list' 'Show saved connections'
+      _sshgo_ui 1 command 'sshgo show HOST' 'Show effective connection settings'
       _sshgo_ui 1 command 'sshgo --manual HOST' 'Connect without a saved password'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'PASSWORDS'
@@ -121,6 +160,10 @@ sshgo() {
       _sshgo_ui 1 section 'SPEED TEST'
       _sshgo_ui 1 command 'sshgo --speed HOST [MiB]' 'Download test · default 10 MiB'
       _sshgo_ui 1 blank
+      _sshgo_ui 1 section 'OPTIONS'
+      _sshgo_ui 1 command 'sshgo --version' 'Show the installed version'
+      _sshgo_ui 1 command 'sshgo --no-keyring ...' 'Skip saved passwords for one operation'
+      _sshgo_ui 1 blank
       _sshgo_ui 1 section 'EXAMPLES'
       _sshgo_ui 1 command 'sshgo example' 'Open a remote shell'
       _sshgo_ui 1 command 'sshgo example hostname' 'Run a remote command'
@@ -130,6 +173,16 @@ sshgo() {
       _sshgo_ui 1 hint 'Servers: ~/.ssh/config  ·  Colour: respects NO_COLOR'
       _sshgo_ui 1 blank
       return 0 ;;
+    version)
+      if [[ -n "${SSHGO_LIBDIR-}" && -r "$SSHGO_LIBDIR/version" ]] &&
+         IFS= read -r installed_version < "$SSHGO_LIBDIR/version" &&
+         [[ "$installed_version" == <->.<->.<-> ]]; then
+        printf 'sshgo %s\n' "$installed_version"
+        return 0
+      fi
+      _sshgo_ui 2 error 'Installed version metadata is missing or invalid.'
+      _sshgo_ui 2 hint 'Run the executable installed by the sshgo package.'
+      return 1 ;;
   esac
   target="${1-}"
   (( $# > 0 )) && shift
@@ -144,7 +197,7 @@ sshgo() {
       }
     ' "$HOME/.ssh/config")}")
   fi
-  if [[ "$target" == --list && "$mode" == connect ]]; then
+  if [[ "$mode" == list ]]; then
     if [[ -t 1 ]]; then
       _sshgo_hosts 1 "${hosts[@]}"
       _sshgo_ui 1 blank
@@ -155,7 +208,7 @@ sshgo() {
     fi
     return 0
   fi
-  if [[ -z "$target" ]]; then
+  if (( pick_host )); then
     if (( ${#hosts[@]} == 0 )); then
       _sshgo_ui 2 error 'No servers configured.'
       _sshgo_ui 2 hint 'Add a Host entry to ~/.ssh/config, then run sshgo.'
@@ -188,7 +241,7 @@ sshgo() {
   esac
   if [[ "$mode" == speed ]]; then
     local size="${1-10}"
-    if (( $# > 1 )) || [[ "$size" != <-> ]] || (( ${#size} > 6 )); then
+    if [[ "$size" != <-> ]] || (( ${#size} > 6 )); then
       _sshgo_ui 2 error 'Test size must be a whole number from 1 to 999999 MiB.'
       _sshgo_ui 2 hint 'Usage: sshgo --speed HOST [MiB]  ·  Default: 10 MiB'
       return 2
@@ -203,7 +256,10 @@ sshgo() {
       _sshgo_ui 2 hint 'Install pv with your system package manager.'
       return 1
     fi
-    local -a speed_status
+    local -a speed_status speed_options
+    local received_bytes
+    local -i expected_bytes=$(( size_mib * 1048576 ))
+    (( use_keyring )) || speed_options=(--no-keyring)
     _sshgo_ui 2 header 'Download speed test'
     _sshgo_ui 2 field 'Server' "$target"
     _sshgo_ui 2 field 'Direction' 'Remote → local'
@@ -211,18 +267,25 @@ sshgo() {
     _sshgo_ui 2 blank
     # The normal connection path preserves keyring authentication. -W waits
     # for data, keeping connection/authentication time out of the progress timer.
-    sshgo "$target" -T -o Compression=no \
-      "dd if=/dev/zero bs=1048576 count=${size_mib} 2>/dev/null" \
-      | command pv -W -f -s "$(( size_mib * 1048576 ))" \
-          -F '  %p  %b  %t  %r  avg %a' > /dev/null
-    speed_status=( "${pipestatus[@]}" )
-    if (( speed_status[1] != 0 )); then
-      _sshgo_ui 2 error "Speed test failed (SSH exit ${speed_status[1]}); no valid measurement."
-      return "${speed_status[1]}"
-    fi
-    if (( speed_status[2] != 0 )); then
-      _sshgo_ui 2 error 'The speed display could not finish.'
-      return "${speed_status[2]}"
+    received_bytes=$(
+      sshgo "${speed_options[@]}" -- "$target" -T -o Compression=no \
+        "dd if=/dev/zero bs=1048576 count=${size_mib} 2>/dev/null" \
+        | command pv -W -f -s "$expected_bytes" -F '  %p  %b  %t  %r  avg %a' \
+        | command wc -c
+      speed_status=( "${pipestatus[@]}" )
+      if (( speed_status[1] != 0 )); then
+        _sshgo_ui 2 error "Speed test failed (SSH exit ${speed_status[1]}); no valid measurement."
+        exit "${speed_status[1]}"
+      fi
+      if (( speed_status[2] != 0 || speed_status[3] != 0 )); then
+        _sshgo_ui 2 error 'Could not measure the speed test data.'
+        exit 1
+      fi
+    ) || return $?
+    received_bytes="${received_bytes//[[:space:]]/}"
+    if [[ "$received_bytes" != "$expected_bytes" ]]; then
+      _sshgo_ui 2 error "Received $received_bytes of $expected_bytes expected bytes; no valid measurement."
+      return 1
     fi
     _sshgo_ui 2 success 'Transfer complete.'
     _sshgo_ui 2 blank
@@ -239,9 +302,9 @@ sshgo() {
   # Transfer operands are paths, not SSH options or remote commands.
   local -a config_args
   if [[ "$mode" == download || "$mode" == upload ]]; then
-    if (( $# < 1 || $# > 2 )) || [[ -z "${1-}" || ( $# == 2 && -z "${2-}" ) ]]; then
+    if [[ -z "$1" || ( $# == 2 && -z "$2" ) ]]; then
       _sshgo_ui 2 error 'Provide a source path and optionally a destination path.'
-      _sshgo_ui 2 hint "Usage: sshgo --$mode HOST SOURCE [DESTINATION]"
+      _sshgo_ui 2 hint "Usage: $usage"
       return 2
     fi
     config_args=()
@@ -250,10 +313,29 @@ sshgo() {
   fi
 
   # Resolve user/host/port with SSH itself, including aliases and option overrides.
-  ssh_config=$(command /usr/bin/ssh -G "$target" "${config_args[@]}" 2>/dev/null) || {
-    _sshgo_ui 2 error 'Could not resolve the SSH configuration.'
+  ssh_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$target" "${config_args[@]}") || {
+    _sshgo_ui 2 error "Could not resolve the SSH configuration for $target."
     return 2
   }
+  if [[ "$mode" == show ]]; then
+    _sshgo_ui 1 header 'SSH configuration'
+    _sshgo_ui 1 field 'Host' "$target"
+    # Only print connection metadata. Arbitrary commands and environment
+    # variables in ssh -G output can contain secrets.
+    local key value
+    while IFS=' ' read -r key value; do
+      case "$key" in
+        hostname) _sshgo_ui 1 field 'Hostname' "$value" ;;
+        user) _sshgo_ui 1 field 'User' "$value" ;;
+        port) _sshgo_ui 1 field 'Port' "$value" ;;
+        proxyjump) _sshgo_ui 1 field 'ProxyJump' "$value" ;;
+        identityfile) _sshgo_ui 1 field 'IdentityFile' "$value" ;;
+        identitiesonly) _sshgo_ui 1 field 'IdentitiesOnly' "$value" ;;
+        stricthostkeychecking) _sshgo_ui 1 field 'HostKeyCheck' "$value" ;;
+      esac
+    done <<< "$ssh_config"
+    return 0
+  fi
   account=$(printf '%s\n' "$ssh_config" | awk '$1 == "user" { print $2; exit }')
   hostname=$(printf '%s\n' "$ssh_config" | awk '$1 == "hostname" { print $2; exit }')
   port=$(printf '%s\n' "$ssh_config" | awk '$1 == "port" { print $2; exit }')
@@ -323,7 +405,7 @@ sshgo() {
       _sshgo_ui 2 field 'To' "$remote_path"
     fi
     _sshgo_ui 2 blank
-    if _sshgo_secret_exists "$service" "$account"; then
+    if (( use_keyring )) && _sshgo_secret_exists "$service" "$account"; then
       if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
         _sshgo_ui 2 error 'The password helper is missing.'
         return 1
@@ -350,7 +432,7 @@ sshgo() {
     _sshgo_ui 2 hint "${account}@${hostname}:${port}"
   fi
   # Check whether a saved secret is available. OpenSSH uses its askpass interface.
-  if _sshgo_secret_exists "$service" "$account"; then
+  if (( use_keyring )) && _sshgo_secret_exists "$service" "$account"; then
     if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
       _sshgo_ui 2 error 'The password helper is missing.'
       _sshgo_ui 2 hint "Connect manually: sshgo --manual $target"

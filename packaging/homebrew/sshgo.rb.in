@@ -12,6 +12,7 @@ class Sshgo < Formula
   def install
     bin.install "src/sshgo"
     (lib/"sshgo").install "src/sshgo.zsh", "src/sshgo-askpass"
+    (lib/"sshgo/version").write "#{version}\n"
     (share/"doc/sshgo").install "LICENSE"
     chmod 0755, lib/"sshgo/sshgo-askpass"
   end
