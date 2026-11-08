@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 1.0.2 — 2026-11-09
 - List each explicit alias on a `Host` line as a separate connection.
 
 ## 1.0.1 — 2026-11-09
