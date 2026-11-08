@@ -192,7 +192,7 @@ sshgo() {
       tolower($1) == "host" {
         for (i = 2; i <= NF; i++) {
           if ($i ~ /^#/) break
-          if ($i !~ /[*?!]/) { if (!seen[$i]++) print $i; break }
+          if ($i !~ /[*?!]/ && !seen[$i]++) print $i
         }
       }
     ' "$HOME/.ssh/config")}")

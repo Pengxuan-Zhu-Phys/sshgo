@@ -21,6 +21,8 @@ Host example
   User your_username
 ```
 
+Each explicit alias gets its own entry in the picker and `--list`. For example, `Host lab work` lists both `lab` and `work`, even if they connect to the same endpoint.
+
 ```sh
 sshgo                         # Pick a server
 sshgo --list                  # List servers
@@ -52,10 +54,10 @@ The optional speed test uses `pv` and measures remote-to-local SSH throughput wi
 
 ## Prepare a Homebrew tap
 
-After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.1.tar.gz`. Then render a formula using the exact downloaded archive:
+After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.2.tar.gz`. Then render a formula using the exact downloaded archive:
 
 ```sh
-python3 scripts/render-homebrew-formula.py 1.0.1 sshgo-1.0.1.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
+python3 scripts/render-homebrew-formula.py 1.0.2 sshgo-1.0.2.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
 ```
 
 Review and publish the formula in your tap. Once published, users can install it with `brew install Pengxuan-Zhu-Phys/tap/sshgo` if the tap repository is named `homebrew-tap`. The renderer embeds the archive's SHA-256; use the archive downloaded from the tag, not a locally generated substitute.

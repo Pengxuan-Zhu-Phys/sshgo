@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- List each explicit alias on a `Host` line as a separate connection.
+
 ## 1.0.1 — 2026-11-09
 - Add `sshgo show HOST` for connection settings and `sshgo --version` for the installed version.
 - Add `--no-keyring` for individual connections, transfers and speed tests.
