@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 1.0.3 — 2026-11-09
 - Add `sshgo doctor HOST` to diagnose direct SSH connections without prompting or changing host trust.
 - Add `sshgo tunnel HOST REMOTE_PORT [LOCAL_PORT]` to forward a remote service to local loopback.
 - Add `sshgo session HOST [NAME]` to open or resume a remote tmux session.
