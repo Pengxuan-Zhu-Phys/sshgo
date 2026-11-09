@@ -6,7 +6,7 @@ Architecture: all
 Maintainer: SSHGo Maintainers <41820848+Pengxuan-Zhu-Phys@users.noreply.github.com>
 Depends: zsh, openssh-client (>= 1:8.9)
 Recommends: pv
-Suggests: libsecret-tools
+Suggests: libsecret-tools, python3-yaml
 Description: SSH connection picker and file transfer helper
  SSHGo provides a server picker, SSH file transfers and speed tests.
  It reads existing OpenSSH configuration and can optionally use a
