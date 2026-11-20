@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 1.0.4 — 2026-11-21
 - Save verified SSH passwords automatically and reuse the keyring independently for each ProxyJump hop.
 - Use `--manual` to bypass the keyring. The previous password-management flags and `setup HOST password-from` are removed.
 - Set a default upload directory for each host with `sshgo setup HOST upload-dir DIR`.
