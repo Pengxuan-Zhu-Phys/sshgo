@@ -1,17 +1,3 @@
 #!/bin/sh
-# OpenSSH receives the password through stdout, never argv or environment.
-# Only answer the target's password prompt, not key/host/jump-host prompts.
-if [ -z "${SSHGO_KEYCHAIN_ACCOUNT-}" ] ||
-   [ -z "${SSHGO_KEYCHAIN_HOST-}" ] ||
-   [ -z "${SSHGO_KEYCHAIN_SERVICE-}" ] ||
-   [ "${SSH_ASKPASS_PROMPT-}" = confirm ]; then
-    exit 1
-fi
-sshgo_expected="${SSHGO_KEYCHAIN_ACCOUNT}@${SSHGO_KEYCHAIN_HOST}'s password: "
-if [ "${1-}" != "$sshgo_expected" ]; then
-    exit 1
-fi
-if [ "$(uname -s)" = Darwin ]; then
-    exec /usr/bin/security find-generic-password -a "$SSHGO_KEYCHAIN_ACCOUNT" -s "$SSHGO_KEYCHAIN_SERVICE" -w 2>/dev/null
-fi
-exec secret-tool lookup service "$SSHGO_KEYCHAIN_SERVICE" account "$SSHGO_KEYCHAIN_ACCOUNT" 2>/dev/null
+# OpenSSH receives the password on a private pipe.
+exec "$SSHGO_AUTH_PYTHON" "$(dirname "$0")/sshgo-auth" --askpass "$@"

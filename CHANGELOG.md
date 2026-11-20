@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Save verified SSH passwords automatically and reuse the keyring independently for each ProxyJump hop.
+- Use `--manual` to bypass the keyring. The previous password-management flags and `setup HOST password-from` are removed.
+- Set a default upload directory for each host with `sshgo setup HOST upload-dir DIR`.
+
 ## 1.0.3 — 2026-11-09
 - Add `sshgo doctor HOST` to diagnose direct SSH connections without prompting or changing host trust.
 - Add `sshgo tunnel HOST REMOTE_PORT [LOCAL_PORT]` to forward a remote service to local loopback.

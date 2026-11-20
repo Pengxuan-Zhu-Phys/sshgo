@@ -1,36 +1,3 @@
-# Native credential backends. Passwords are never stored in arguments or files.
-_sshgo_secret_exists() {
-  if [[ "$(uname -s)" == Darwin ]]; then
-    /usr/bin/security find-generic-password -a "$2" -s "$1" >/dev/null 2>&1
-  else
-    command -v secret-tool >/dev/null 2>&1 || return 1
-    command secret-tool lookup service "$1" account "$2" >/dev/null 2>&1
-  fi
-}
-_sshgo_secret_store() {
-  if [[ "$(uname -s)" == Darwin ]]; then
-    /usr/bin/security add-generic-password -U -a "$2" -s "$1" -l "sshgo: $2@$3:$4" -w
-  else
-    if ! command -v secret-tool >/dev/null 2>&1; then
-      _sshgo_ui 2 error 'Password storage needs secret-tool and an unlocked Secret Service keyring.'
-      _sshgo_ui 2 hint 'Install libsecret-tools; SSH keys work without a desktop keyring.'
-      return 1
-    fi
-    command secret-tool store --label="sshgo: $2@$3:$4" service "$1" account "$2" || {
-      _sshgo_ui 2 error 'Could not access the Secret Service keyring.'
-      return 1
-    }
-  fi
-}
-_sshgo_secret_clear() {
-  if [[ "$(uname -s)" == Darwin ]]; then
-    /usr/bin/security delete-generic-password -a "$2" -s "$1"
-  else
-    command -v secret-tool >/dev/null 2>&1 || { _sshgo_ui 2 error 'Password storage needs secret-tool.'; return 1; }
-    command secret-tool clear service "$1" account "$2"
-  fi
-}
-
 # Quick SSH connections for zsh. Passwords can be stored in the platform keyring.
 # UI uses stderr except for command results.
 _sshgo_ui() {
@@ -93,7 +60,7 @@ _sshgo_command_help() {
         'HOST can be an SSH alias or a number from sshgo --list.') ;;
     manual)
       title='Manual login'
-      details=('Connect with OpenSSH and skip the SSHGo saved password.'
+      details=('Connect with OpenSSH without reading or storing passwords in the keyring.'
         'Arguments after HOST are passed to SSH.')
       example='sshgo --manual example -v' example_hint='Connect with verbose SSH output' ;;
     doctor)
@@ -125,8 +92,8 @@ _sshgo_command_help() {
         'When finished, run exit in the last shell to close the session.')
       example='sshgo example --screen' example_hint='Open or resume work' ;;
     setup)
-      title='Remote tools'
-      details=('Prepare remote tools in an existing directory outside the remote home.'
+      title='Remote tools and directories'
+      details=('Set default directories or prepare remote tools outside the remote home.'
         'Omit REMOTE_ROOT to use the saved path. Tool setup needs remote Python 3.')
       example='sshgo setup example warpify --dry-run' example_hint='Preview Warp storage' ;;
     remote-root)
@@ -135,12 +102,12 @@ _sshgo_command_help() {
         'Pass an absolute path to save it locally for that alias.'
         'Tool setup checks the path on the remote host.')
       example='sshgo setup example remote-root /scratch/alice/tools' example_hint='Save the default path' ;;
-    password-from)
-      title='Reuse a saved password'
-      details=('Reuse the password for SOURCE on HOST and its single ProxyJump alias.'
-        'Both hops must use the same user, and the jump must share the SSH identity of SOURCE.'
-        'Omit SOURCE to show the setting. Use --clear to remove the reference.')
-      example='sshgo setup compute password-from gateway' example_hint='Reuse the gateway password for compute' ;;
+    upload-dir)
+      title='Default upload directory'
+      details=('Use an existing absolute directory on the remote host.'
+        'Omit DIR to show the saved path. Use --clear to remove it.'
+        'An explicit destination passed to --upload takes precedence.')
+      example='sshgo setup example upload-dir /scratch/alice/incoming' example_hint='Save the upload destination' ;;
     warpify)
       title='Warp SSH extension'
       details=('Prepare REMOTE_ROOT/warpify and link the remote ~/.warp to it.'
@@ -154,13 +121,6 @@ _sshgo_command_help() {
         'Merge it into local VS Code User Settings JSON, then use Remote-SSH.'
         'Omit REMOTE_ROOT to use the saved path.')
       example='sshgo setup example vscode-server --dry-run' example_hint='Preview the VS Code settings' ;;
-    save)
-      title='Save server password'
-      details=('Prompt for the server password and save it in the system keyring.'
-        'Uses macOS Keychain or Linux Secret Service with secret-tool.') ;;
-    forget)
-      title='Remove saved password'
-      details=('Remove the saved server password from the system keyring.') ;;
     download)
       title='Download files'
       details=('Download a remote file or directory over SFTP.'
@@ -169,7 +129,9 @@ _sshgo_command_help() {
     upload)
       title='Upload files'
       details=('Upload a local file or directory over SFTP.'
-        'REMOTE defaults to the remote home. Existing files may be overwritten.')
+        'REMOTE defaults to the saved upload directory, then the remote home.'
+        'Use sshgo setup HOST upload-dir DIR to set the default.'
+        'Existing files may be overwritten.')
       example='sshgo --upload example ./file /remote/directory/' example_hint='Upload into a remote directory' ;;
     speed)
       title='Download speed test'
@@ -178,13 +140,13 @@ _sshgo_command_help() {
       example='sshgo --speed example 100' example_hint='Test with 100 MiB' ;;
     export)
       title='Export SSH configuration'
-      details=('Save ~/.ssh/config and per-host remote roots to a private YAML file.'
+      details=('Save ~/.ssh/config and per-host directory settings to a private YAML file.'
         'Requires Python 3 and PyYAML. Choose a new output file.'
         'SSH keys, saved passwords, and known_hosts stay separate.')
       example='sshgo export ./sshgo.yaml' example_hint='Create a portable backup' ;;
     import)
       title='Import SSH configuration'
-      details=('Restore the SSH config and remote roots from a trusted SSHGo YAML file.'
+      details=('Restore SSH config and directory settings from a trusted SSHGo YAML file.'
         'Requires Python 3 and PyYAML. Conflicting local files stop the import.')
       example='sshgo import ./sshgo.yaml' example_hint='Restore configuration on this machine' ;;
     version)
@@ -199,7 +161,7 @@ _sshgo_command_help() {
     _sshgo_ui 1 section 'ACTIONS'
     if [[ "$topic" == setup ]]; then
       _sshgo_ui 1 command 'remote-root [DIR]' 'Show or save the default tool path'
-      _sshgo_ui 1 command 'password-from [SOURCE]' 'Reuse a saved password for a jump connection'
+      _sshgo_ui 1 command 'upload-dir [DIR|--clear]' 'Manage the default upload directory'
       _sshgo_ui 1 command 'warpify [DIR]' 'Prepare storage for Warp'
       _sshgo_ui 1 command 'vscode-server [DIR]' 'Prepare storage for VS Code Server'
     else
@@ -218,7 +180,7 @@ _sshgo_command_help() {
   esac
   case "$topic" in
     tunnel|session|screen|setup|warpify|vscode-server|download|upload|speed)
-      _sshgo_ui 1 command '--no-keyring' 'Skip saved passwords (before command)' ;;
+      _sshgo_ui 1 command '--manual' 'Skip the keyring (before command)' ;;
   esac
   if [[ -n "$example" ]]; then
     _sshgo_ui 1 blank
@@ -314,7 +276,7 @@ _sshgo_doctor() {
   return 1
 }
 
-_sshgo_valid_root() {
+_sshgo_valid_remote_dir() {
   [[ "$1" == /* && "$1" != *[[:cntrl:]]* ]]
 }
 
@@ -337,7 +299,7 @@ _sshgo_host_config_path() {
       *) printf -v escaped '%%%02x' "'$char"; key+="$escaped" ;;
     esac
   done
-  printf '%s/%s.%s\n' "$(_sshgo_hosts_config_dir)" "$key" "${2:-remote-root}"
+  printf '%s/%s.%s\n' "$(_sshgo_hosts_config_dir)" "$key" "$2"
 }
 
 _sshgo_write_host_setting() (
@@ -353,73 +315,6 @@ _sshgo_config_value() {
   command awk -v key="$2" '$1 == key { print substr($0, length(key) + 2); exit }' <<< "$1"
 }
 
-_sshgo_simple_alias() {
-  [[ "$1" == [a-zA-Z0-9_]* && "$1" != *[^a-zA-Z0-9._-]* ]]
-}
-
-_sshgo_password_source() {
-  local config_file source
-  config_file=$(_sshgo_host_config_path "$1" password-from) || return 1
-  if [[ -L "$config_file" || ( -e "$config_file" && ! -f "$config_file" ) ]]; then
-    _sshgo_ui 2 error "Expected a regular config file: $config_file"
-    return 1
-  fi
-  if (( $# == 1 )); then
-    [[ -f "$config_file" ]] || return 0
-    source=$(<"$config_file") || return 1
-    if ! _sshgo_simple_alias "$source"; then
-      _sshgo_ui 2 error "Invalid password source in $config_file."
-      return 2
-    fi
-    printf '%s\n' "$source"
-  elif [[ "$2" == --clear ]]; then
-    command rm -f -- "$config_file"
-  elif _sshgo_simple_alias "$2"; then
-    _sshgo_write_host_setting "$config_file" "$2"
-  else
-    _sshgo_ui 2 error 'Provide a plain SSH alias for the saved password.'
-    return 2
-  fi
-}
-
-_sshgo_shared_password_route() {
-  local ssh_config="$1" source="$2" account="$3" hostname="$4" port="$5"
-  local jump source_config jump_config source_host source_port jump_host jump_key
-  jump=$(_sshgo_config_value "$ssh_config" proxyjump)
-  if ! _sshgo_simple_alias "$jump" || [[ "$jump" == none ]]; then
-    _sshgo_ui 2 error 'Password reuse requires a single ProxyJump alias.'
-    return 2
-  fi
-  source_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$source") || return $?
-  jump_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$jump") || return $?
-  source_host=$(_sshgo_config_value "$source_config" hostname)
-  source_port=$(_sshgo_config_value "$source_config" port)
-  jump_host=$(_sshgo_config_value "$jump_config" hostname)
-  jump_key=$(_sshgo_config_value "$jump_config" hostkeyalias)
-  if [[ "$account" != "$(_sshgo_config_value "$source_config" user)" ||
-        "$account" != "$(_sshgo_config_value "$jump_config" user)" ||
-        "${jump_key:-$jump_host}" != "$source_host" ||
-        "$(_sshgo_config_value "$jump_config" port)" != "$source_port" ||
-        -n "$(_sshgo_config_value "$jump_config" proxyjump)" ||
-        -n "$(_sshgo_config_value "$jump_config" proxycommand)" ]]; then
-    _sshgo_ui 2 error 'Password reuse requires a direct jump with the source host key, port and user.'
-    return 2
-  fi
-  # ProxyCommand is evaluated by the shell. Only embed validated endpoint values.
-  if [[ -z "$source_host" || "$source_host" == *[^a-zA-Z0-9._:-]* ||
-        -z "$hostname" || "$hostname" == *[^a-zA-Z0-9._:-]* ||
-        "$port" != <-> || "$source_port" != <-> ]]; then
-    _sshgo_ui 2 error 'Unsupported SSH endpoint for password reuse.'
-    return 2
-  fi
-  # Give the jump its own exact askpass prompt and enforce host checks on both SSH clients.
-  local proxy="ProxyCommand=/usr/bin/env SSHGO_KEYCHAIN_HOST='$source_host' /usr/bin/ssh"
-  proxy+=' -o ProxyCommand=none -o StrictHostKeyChecking=yes -o NoHostAuthenticationForLocalhost=no'
-  proxy+=' -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=publickey,password -o KbdInteractiveAuthentication=no'
-  proxy+=" -W '[$hostname]:$port' -- '$jump'"
-  printf '%s\t%s\n' "sshgo:ssh:${source_host}:${source_port}" "$proxy"
-}
-
 _sshgo_config_bundle() {
   local libdir="${SSHGO_LIBDIR-}"
   if [[ -z "$libdir" ]]; then
@@ -433,39 +328,45 @@ _sshgo_config_bundle() {
   command python3 -B "$libdir/sshgo-config.py" "$@" "$(_sshgo_hosts_config_dir)"
 }
 
-_sshgo_remote_root() {
-  local target="$1" config_file root
-  config_file=$(_sshgo_host_config_path "$target") || return 1
+_sshgo_remote_directory() {
+  local target="$1" setting="$2" config_file directory label='default remote root'
+  [[ "$setting" != upload-dir ]] || label='default upload directory'
+  config_file=$(_sshgo_host_config_path "$target" "$setting") || return 1
   if [[ -L "$config_file" || ( -e "$config_file" && ! -f "$config_file" ) ]]; then
     _sshgo_ui 2 error "Expected a regular config file: $config_file"
     return 1
   fi
-  if (( $# == 1 )); then
+  if (( $# == 2 )); then
     [[ -f "$config_file" ]] || return 0
-    root=$(<"$config_file") || return 1
-    if ! _sshgo_valid_root "$root"; then
-      _sshgo_ui 2 error "Invalid remote root in $config_file."
-      _sshgo_ui 2 hint "Set it again with sshgo setup ${(q)target} remote-root /remote/path."
+    directory=$(<"$config_file") || return 1
+    if ! _sshgo_valid_remote_dir "$directory"; then
+      _sshgo_ui 2 error "Invalid $label in $config_file."
+      _sshgo_ui 2 hint "Set it again with sshgo setup ${(q)target} $setting /remote/path."
       return 2
     fi
-    printf '%s\n' "$root"
+    printf '%s\n' "$directory"
     return 0
   fi
 
-  root="$2"
-  if ! _sshgo_valid_root "$root"; then
-    _sshgo_ui 2 error 'The remote root must be an absolute path on the remote host.'
+  if [[ "$setting" == upload-dir && "$3" == --clear ]]; then
+    command rm -f -- "$config_file" || return 1
+    _sshgo_ui 2 success "Cleared the $label for $target."
+    return 0
+  fi
+  directory="$3"
+  if ! _sshgo_valid_remote_dir "$directory"; then
+    _sshgo_ui 2 error "The $label must be an absolute path on the remote host."
     return 2
   fi
-  _sshgo_write_host_setting "$config_file" "$root" || return 1
-  _sshgo_ui 2 success "Saved the default remote root for $target."
+  _sshgo_write_host_setting "$config_file" "$directory" || return 1
+  _sshgo_ui 2 success "Saved the $label for $target."
 }
 
 _sshgo_setup() {
   emulate -L zsh
   local target="$1" tool="$2" root="$3" dry_run="$4" use_keyring="$5"
   local -a options
-  (( use_keyring )) || options=(--no-keyring)
+  (( use_keyring )) || options=(--manual)
   # Quote each argument for the remote shell. Python reads the program from SSH stdin.
   sshgo "${options[@]}" -- "$target" -T \
     -o RemoteCommand=none -o SessionType=default -o StdinNull=no \
@@ -636,40 +537,42 @@ SH
 }
 
 sshgo() {
-  local mode=connect target choice host ssh_config account hostname port service
+  local mode=connect target choice host ssh_config account hostname port
   local usage='' installed_version
   local root_usage='sshgo setup HOST remote-root [REMOTE_ROOT]'
-  local password_usage='sshgo setup HOST password-from [SOURCE|--clear]'
-  local screen_usage=$'sshgo [--no-keyring] HOST --screen [NAME]\n       sshgo [--no-keyring] HOST --screen <new|resume|detach> [NAME]\n       sshgo [--no-keyring] HOST --screen list'
-  local -i use_keyring=1 pick_host=$(( $# == 0 )) min_args=1 max_args=1
+  local upload_dir_usage='sshgo setup HOST upload-dir [DIR|--clear]'
+  local screen_usage=$'sshgo [--manual] HOST --screen [NAME]\n       sshgo [--manual] HOST --screen <new|resume|detach> [NAME]\n       sshgo [--manual] HOST --screen list'
+  local -i use_keyring=1 min_args=1 max_args=1
   local -a hosts
-  if [[ "${1-}" == --no-keyring ]]; then
+  if [[ "${1-}" == --manual ]]; then
     use_keyring=0
     shift
+    if (( $# == 0 )) || { (( $# == 1 )) && [[ "$1" == (-h|--help) ]]; }; then
+      _sshgo_command_help manual 'sshgo --manual HOST [SSH_ARGS...]'
+      return 0
+    fi
   fi
+  local -i pick_host=$(( $# == 0 ))
   case "${1-}" in
-    --set-password) mode=save; usage='sshgo --set-password HOST' ;;
-    --forget-password) mode=forget; usage='sshgo --forget-password HOST' ;;
-    --manual) mode=manual; usage='sshgo --manual HOST [ssh arguments...]'; max_args=-1 ;;
-    --speed) mode=speed; usage='sshgo [--no-keyring] --speed HOST [MiB]'; max_args=2 ;;
-    --download) mode=download; usage='sshgo [--no-keyring] --download HOST REMOTE [LOCAL]'; min_args=2; max_args=3 ;;
-    --upload) mode=upload; usage='sshgo [--no-keyring] --upload HOST LOCAL [REMOTE]'; min_args=2; max_args=3 ;;
+    --speed) mode=speed; usage='sshgo [--manual] --speed HOST [MiB]'; max_args=2 ;;
+    --download) mode=download; usage='sshgo [--manual] --download HOST REMOTE [LOCAL]'; min_args=2; max_args=3 ;;
+    --upload) mode=upload; usage='sshgo [--manual] --upload HOST LOCAL [REMOTE]'; min_args=2; max_args=3 ;;
     show) mode=show; usage='sshgo show HOST' ;;
     doctor) mode=doctor; usage='sshgo doctor HOST' ;;
     export) mode=export; usage='sshgo export FILE.yaml' ;;
     import) mode=import; usage='sshgo import FILE.yaml' ;;
     tunnel)
       mode=tunnel
-      usage='sshgo [--no-keyring] tunnel HOST REMOTE_PORT [LOCAL_PORT]'
+      usage='sshgo [--manual] tunnel HOST REMOTE_PORT [LOCAL_PORT]'
       min_args=2 max_args=3 ;;
     session)
       mode=session
-      usage='sshgo [--no-keyring] session HOST [NAME]'
+      usage='sshgo [--manual] session HOST [NAME]'
       max_args=2 ;;
     --screen) mode=screen; usage="$screen_usage"; min_args=0; max_args=0 ;;
     setup)
       mode=setup
-      usage="sshgo [--no-keyring] setup HOST TOOL [REMOTE_ROOT] [--dry-run]"$'\n       '"$root_usage"$'\n       '"$password_usage"
+      usage="sshgo [--manual] setup HOST TOOL [REMOTE_ROOT] [--dry-run]"$'\n       '"$root_usage"$'\n       '"$upload_dir_usage"
       min_args=2 max_args=4 ;;
     --list) mode=list; usage='sshgo --list'; min_args=0; max_args=0 ;;
     -h|--help) mode=help; usage='sshgo --help'; min_args=0; max_args=0 ;;
@@ -690,16 +593,16 @@ sshgo() {
     if (( min_args > 0 && $# == 2 )) && [[ -n "$1" && "$1" != -* && "$2" == (-h|--help) ]]; then
       # Keep SSH passthrough and literal transfer paths intact after HOST.
       case "$mode" in
-        manual|upload|download) ;;
+        upload|download) ;;
         *) _sshgo_command_help "$mode" "$usage"; return 0 ;;
       esac
     fi
     if [[ "$mode" == setup && $# == 3 && -n "$1" && "$1" != -* && "$3" == (-h|--help) ]]; then
       case "$2" in
         remote-root) _sshgo_command_help remote-root "$root_usage"; return 0 ;;
-        password-from) _sshgo_command_help password-from "$password_usage"; return 0 ;;
+        upload-dir) _sshgo_command_help upload-dir "$upload_dir_usage"; return 0 ;;
         warpify|vscode-server)
-          _sshgo_command_help "$2" "sshgo [--no-keyring] setup HOST $2 [REMOTE_ROOT] [--dry-run]"
+          _sshgo_command_help "$2" "sshgo [--manual] setup HOST $2 [REMOTE_ROOT] [--dry-run]"
           return 0 ;;
       esac
     fi
@@ -721,7 +624,7 @@ sshgo() {
     fi
   elif [[ -z "${1-}" ]]; then
     _sshgo_ui 2 error 'Provide a host name or number.'
-    _sshgo_ui 2 hint 'Usage: sshgo [--no-keyring] HOST [ssh arguments...]'
+    _sshgo_ui 2 hint 'Usage: sshgo [--manual] HOST [ssh arguments...]'
     return 2
   fi
   case "$mode" in
@@ -732,18 +635,18 @@ sshgo() {
         return 0
       fi ;;
     help)
-      printf '%s\n' 'Usage: sshgo [--no-keyring] [HOST [SSH_ARGS...]]' \
-        '       sshgo [--no-keyring] COMMAND [ARGS...]'
+      printf '%s\n' 'Usage: sshgo [--manual] [HOST [SSH_ARGS...]]' \
+        '       sshgo [--manual] COMMAND [ARGS...]'
       _sshgo_ui 1 header 'Your servers, one command.'
       _sshgo_ui 1 section 'CONNECT'
       _sshgo_ui 1 command 'sshgo' 'Choose a server'
-      _sshgo_ui 1 command 'sshgo HOST' 'Connect by name or number'
+      _sshgo_ui 1 command 'sshgo HOST' 'Connect and remember passwords'
       _sshgo_ui 1 command 'sshgo --list' 'Show saved connections'
-      _sshgo_ui 1 command 'sshgo show HOST' 'Show SSH settings and default tool path'
+      _sshgo_ui 1 command 'sshgo show HOST' 'Show SSH settings and default directories'
       _sshgo_ui 1 command 'sshgo doctor HOST' 'Diagnose an SSH connection'
       _sshgo_ui 1 command 'sshgo session HOST [NAME]' 'Open or resume a tmux session'
       _sshgo_ui 1 command 'sshgo HOST --screen [NAME]' 'Open or manage a tmux session'
-      _sshgo_ui 1 command 'sshgo --manual HOST' 'Connect without a saved password'
+      _sshgo_ui 1 command 'sshgo --manual HOST' 'Connect without using the keyring'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'PORT FORWARDING'
       _sshgo_ui 1 command 'sshgo tunnel HOST REMOTE [LOCAL]' 'Forward a remote port to this machine'
@@ -754,17 +657,13 @@ sshgo() {
       _sshgo_ui 1 hint 'Tools: warpify, vscode-server  ·  Preview changes with --dry-run'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'CONFIGURATION'
-      _sshgo_ui 1 command 'sshgo export FILE.yaml' 'Save SSH configuration and tool paths'
+      _sshgo_ui 1 command 'sshgo export FILE.yaml' 'Save SSH configuration and default directories'
       _sshgo_ui 1 command 'sshgo import FILE.yaml' 'Restore settings on this machine'
-      _sshgo_ui 1 blank
-      _sshgo_ui 1 section 'PASSWORDS'
-      _sshgo_ui 1 command 'sshgo --set-password HOST' 'Save or update in the system keyring'
-      _sshgo_ui 1 command 'sshgo --forget-password HOST' 'Remove the saved password'
-      _sshgo_ui 1 command 'sshgo setup HOST password-from SOURCE' 'Reuse a saved password for a jump connection'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'FILE TRANSFER'
       _sshgo_ui 1 command 'sshgo --download HOST REMOTE [LOCAL]' 'Download a file or folder'
       _sshgo_ui 1 command 'sshgo --upload HOST LOCAL [REMOTE]' 'Upload a file or folder'
+      _sshgo_ui 1 command 'sshgo setup HOST upload-dir [DIR]' 'Show or set the default upload directory'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'SPEED TEST'
       _sshgo_ui 1 command 'sshgo --speed HOST [MiB]' 'Download test · default 10 MiB'
@@ -772,7 +671,6 @@ sshgo() {
       _sshgo_ui 1 section 'OPTIONS'
       _sshgo_ui 1 command 'sshgo --help' 'Show this message and exit.'
       _sshgo_ui 1 command 'sshgo --version' 'Show the installed version'
-      _sshgo_ui 1 command 'sshgo --no-keyring ...' 'Skip saved passwords for one operation'
       _sshgo_ui 1 blank
       _sshgo_ui 1 section 'EXAMPLES'
       _sshgo_ui 1 command 'sshgo example' 'Open a remote shell'
@@ -852,34 +750,28 @@ sshgo() {
       return 2 ;;
   esac
   if [[ "$mode" == setup ]]; then
-    if [[ "$1" == password-from ]]; then
-      if (( $# > 2 )); then
-        _sshgo_ui 2 error 'Provide at most one password source.'
-        _sshgo_ui 2 hint "Usage: $password_usage"
-        return 2
-      fi
-      shift
-      _sshgo_password_source "$target" "$@"
-      return $?
-    fi
-    if [[ "$1" == remote-root ]]; then
+    if [[ "$1" == (remote-root|upload-dir) ]]; then
       case "$#" in
         1)
-          local saved_root
-          saved_root=$(_sshgo_remote_root "$target") || return $?
-          printf '%s\n' "${saved_root:-Not set}"
+          local saved_directory
+          saved_directory=$(_sshgo_remote_directory "$target" "$1") || return $?
+          printf '%s\n' "${saved_directory:-Not set}"
           return 0 ;;
-        2) _sshgo_remote_root "$target" "$2"; return $? ;;
+        2) _sshgo_remote_directory "$target" "$1" "$2"; return $? ;;
         *)
-          _sshgo_ui 2 error 'Provide at most one remote root path.'
-          _sshgo_ui 2 hint "Usage: $root_usage"
+          _sshgo_ui 2 error 'Provide at most one directory argument.'
+          if [[ "$1" == remote-root ]]; then
+            _sshgo_ui 2 hint "Usage: $root_usage"
+          else
+            _sshgo_ui 2 hint "Usage: $upload_dir_usage"
+          fi
           return 2 ;;
       esac
     fi
     local setup_tool="$1" setup_root="${2-}" dry_run="${3-}"
     if (( $# == 2 )) && [[ "$setup_root" == --dry-run ]]; then
       setup_root='' dry_run=--dry-run
-    elif { (( $# >= 2 )) && ! _sshgo_valid_root "$setup_root"; } ||
+    elif { (( $# >= 2 )) && ! _sshgo_valid_remote_dir "$setup_root"; } ||
          { (( $# == 3 )) && [[ "$dry_run" != --dry-run ]]; }; then
       _sshgo_ui 2 error 'Expected an absolute remote path followed by optional --dry-run.'
       _sshgo_ui 2 hint "Usage: $usage"
@@ -891,7 +783,7 @@ sshgo() {
       return 2
     fi
     if [[ -z "$setup_root" ]]; then
-      setup_root=$(_sshgo_remote_root "$target") || return $?
+      setup_root=$(_sshgo_remote_directory "$target" remote-root) || return $?
       if [[ -z "$setup_root" ]]; then
         _sshgo_ui 2 error "No default remote root saved for $target."
         _sshgo_ui 2 hint "Save one with sshgo setup ${(q)target} remote-root /remote/path, or pass a path to setup."
@@ -986,7 +878,7 @@ sshgo() {
     local -a speed_status speed_options
     local received_bytes
     local -i expected_bytes=$(( size_mib * 1048576 ))
-    (( use_keyring )) || speed_options=(--no-keyring)
+    (( use_keyring )) || speed_options=(--manual)
     _sshgo_ui 2 header 'Download speed test'
     _sshgo_ui 2 field 'Server' "$target"
     _sshgo_ui 2 field 'Direction' 'Remote → local'
@@ -1018,36 +910,16 @@ sshgo() {
     _sshgo_ui 2 blank
     return 0
   fi
-  if [[ "$mode" == manual ]]; then
-    if [[ -t 0 && -t 1 ]]; then
-      _sshgo_ui 2 info "Connecting to $target · manual login"
-    fi
-    command /usr/bin/ssh "$target" "$@"
-    return $?
-  fi
-
-  # Transfer operands are paths, not SSH options or remote commands.
-  local -a config_args
-  if [[ "$mode" == download || "$mode" == upload ]]; then
-    if [[ -z "$1" || ( $# == 2 && -z "$2" ) ]]; then
-      _sshgo_ui 2 error 'Provide a source path and optionally a destination path.'
-      _sshgo_ui 2 hint "Usage: $usage"
+  if [[ "$mode" == show || "$mode" == doctor ]]; then
+    ssh_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$target") || {
+      _sshgo_ui 2 error "Could not resolve the SSH configuration for $target."
       return 2
-    fi
-    config_args=()
-  else
-    config_args=("$@")
+    }
   fi
-
-  # Resolve user/host/port with SSH itself, including aliases and option overrides.
-  ssh_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$target" "${config_args[@]}") || {
-    _sshgo_ui 2 error "Could not resolve the SSH configuration for $target."
-    return 2
-  }
   if [[ "$mode" == show ]]; then
-    local show_root show_source
-    show_root=$(_sshgo_remote_root "$target") || return $?
-    show_source=$(_sshgo_password_source "$target") || return $?
+    local show_root show_upload_dir
+    show_root=$(_sshgo_remote_directory "$target" remote-root) || return $?
+    show_upload_dir=$(_sshgo_remote_directory "$target" upload-dir) || return $?
     _sshgo_ui 1 header 'SSH configuration'
     _sshgo_ui 1 field 'Host' "$target"
     # Only print connection metadata. Arbitrary commands and environment
@@ -1065,64 +937,32 @@ sshgo() {
       esac
     done <<< "$ssh_config"
     _sshgo_ui 1 field 'RemoteRoot' "${show_root:-Not set}"
-    [[ -z "$show_source" ]] || _sshgo_ui 1 field 'PasswordFrom' "$show_source"
+    _sshgo_ui 1 field 'UploadDir' "${show_upload_dir:-Not set}"
     return 0
   fi
-  account=$(_sshgo_config_value "$ssh_config" user)
-  hostname=$(_sshgo_config_value "$ssh_config" hostname)
-  port=$(_sshgo_config_value "$ssh_config" port)
-  if [[ -z "$account" || -z "$hostname" || -z "$port" ]]; then
-    _sshgo_ui 2 error 'The SSH configuration needs a user, hostname, and port.'
-    return 2
+  if [[ "$mode" == doctor ]]; then
+    account=$(_sshgo_config_value "$ssh_config" user)
+    hostname=$(_sshgo_config_value "$ssh_config" hostname)
+    port=$(_sshgo_config_value "$ssh_config" port)
+    _sshgo_doctor "$target" "${account}@${hostname}:${port}" "$ssh_config"
+    return $?
   fi
-  service="sshgo:ssh:${hostname}:${port}"
-  case "$mode" in
-    doctor)
-      _sshgo_doctor "$target" "${account}@${hostname}:${port}" "$ssh_config"
-      return $? ;;
-    save)
-      _sshgo_ui 2 header 'Save server password'
-      _sshgo_ui 2 field 'Account' "${account}@${hostname}:${port}"
-      _sshgo_ui 2 hint 'Enter the server password below. It is stored in your system keyring.'
-      _sshgo_ui 2 blank
-      _sshgo_secret_store "$service" "$account" "$hostname" "$port" || return $?
-      _sshgo_ui 2 success 'Password saved.'
-      _sshgo_ui 2 hint "Ready to connect: sshgo $target"
-      return 0 ;;
-    forget)
-      _sshgo_secret_clear "$service" "$account" || return $?
-      _sshgo_ui 2 success "Saved password deleted for $target."
-      return 0 ;;
-  esac
-  local prompt_host="$hostname" password_source route proxy default_config
-  local -a password_options
-  if (( use_keyring )); then
-    password_source=$(_sshgo_password_source "$target") || return $?
-    if [[ -n "$password_source" ]]; then
-      if (( ${#config_args[@]} )); then
-        # Passthrough options may change where the saved password would go.
-        default_config=$(command /usr/bin/ssh -G -o LogLevel=ERROR "$target") || return $?
-        local identity_fields='/^(user|hostname|port|hostkeyalias|proxyjump|proxycommand) /'
-        if [[ "$(command awk "$identity_fields" <<< "$default_config")" !=
-              "$(command awk "$identity_fields" <<< "$ssh_config")" ]]; then
-          _sshgo_ui 2 error 'SSH options changed the configured password reuse route.'
-          _sshgo_ui 2 hint "Connect manually: sshgo --manual ${(q)target}"
-          return 2
-        fi
-      fi
-      route=$(_sshgo_shared_password_route "$ssh_config" "$password_source" "$account" "$hostname" "$port") || return $?
-      IFS=$'\t' read -r service proxy <<< "$route"
-      prompt_host=$(_sshgo_config_value "$ssh_config" hostkeyalias)
-      prompt_host="${prompt_host:-$hostname}"
-      password_options=(-o "$proxy" -o NoHostAuthenticationForLocalhost=no)
-      if ! _sshgo_secret_exists "$service" "$account"; then
-        _sshgo_ui 2 error "No saved password for $password_source."
-        _sshgo_ui 2 hint "Save it with sshgo --set-password ${(q)password_source}."
-        return 1
-      fi
-    fi
+
+  local auth="${SSHGO_LIBDIR-}/sshgo-auth"
+  if [[ -z "${SSHGO_LIBDIR-}" ]]; then
+    local source_file="${(%):-%x}"
+    auth="${source_file:A:h}/sshgo-auth"
+  fi
+  local -i managed=0
+  if (( use_keyring )) && [[ -x "$auth" ]] && command -v python3 >/dev/null 2>&1; then
+    managed=1
   fi
   if [[ "$mode" == download || "$mode" == upload ]]; then
+    if [[ -z "$1" || ( $# == 2 && -z "$2" ) ]]; then
+      _sshgo_ui 2 error 'Provide a source path and optionally a destination path.'
+      _sshgo_ui 2 hint "Usage: $usage"
+      return 2
+    fi
     local local_path remote_path remote_operand local_operand ch
     local -i i rc=0
     if [[ "$mode" == download ]]; then
@@ -1140,10 +980,19 @@ sshgo() {
       remote_operand="${target}:${remote_operand}"
     else
       local_path="$1"
-      remote_path="${2-.}"
       if [[ ! -e "$local_path" ]]; then
         _sshgo_ui 2 error "Local source does not exist: $local_path"
         return 1
+      fi
+      if (( $# == 2 )); then
+        remote_path="$2"
+      else
+        remote_path=$(_sshgo_remote_directory "$target" upload-dir) || return $?
+        if [[ -n "$remote_path" ]]; then
+          remote_path="${remote_path%/}/"
+        else
+          remote_path=.
+        fi
       fi
       remote_operand="${target}:${remote_path}"
     fi
@@ -1168,18 +1017,8 @@ sshgo() {
       _sshgo_ui 2 field 'To' "$remote_path"
     fi
     _sshgo_ui 2 blank
-    if (( use_keyring )) && { [[ -n "$password_source" ]] || _sshgo_secret_exists "$service" "$account"; }; then
-      if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
-        _sshgo_ui 2 error 'The password helper is missing.'
-        return 1
-      fi
-      SSH_ASKPASS="$SSHGO_LIBDIR/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
-        SSHGO_KEYCHAIN_SERVICE="$service" SSHGO_KEYCHAIN_ACCOUNT="$account" \
-        SSHGO_KEYCHAIN_HOST="$prompt_host" LC_ALL=C \
-        command /usr/bin/scp -o StrictHostKeyChecking=yes \
-          -o NumberOfPasswordPrompts=1 \
-          -o PreferredAuthentications=publickey,password \
-          -o KbdInteractiveAuthentication=no "${password_options[@]}" "${scp_args[@]}" || rc=$?
+    if (( managed )); then
+      command /usr/bin/scp -S "$auth" "${scp_args[@]}" || rc=$?
     else
       command /usr/bin/scp "${scp_args[@]}" || rc=$?
     fi
@@ -1192,24 +1031,9 @@ sshgo() {
   fi
   if [[ -t 0 && -t 1 && $# == 0 ]]; then
     _sshgo_ui 2 info "Connecting to $target"
-    _sshgo_ui 2 hint "${account}@${hostname}:${port}"
   fi
-  # Check whether a saved secret is available. OpenSSH uses its askpass interface.
-  if (( use_keyring )) && { [[ -n "$password_source" ]] || _sshgo_secret_exists "$service" "$account"; }; then
-    if [[ ! -x "$SSHGO_LIBDIR/sshgo-askpass" ]]; then
-      _sshgo_ui 2 error 'The password helper is missing.'
-      _sshgo_ui 2 hint "Connect manually: sshgo --manual $target"
-      return 1
-    fi
-    SSH_ASKPASS="$SSHGO_LIBDIR/sshgo-askpass" SSH_ASKPASS_REQUIRE=force \
-      SSHGO_KEYCHAIN_SERVICE="$service" SSHGO_KEYCHAIN_ACCOUNT="$account" \
-      SSHGO_KEYCHAIN_HOST="$prompt_host" LC_ALL=C \
-      command /usr/bin/ssh \
-        -o StrictHostKeyChecking=yes \
-        -o NumberOfPasswordPrompts=1 \
-        -o PreferredAuthentications=publickey,password \
-        -o KbdInteractiveAuthentication=no \
-        "${password_options[@]}" "$target" "$@"
+  if (( managed )); then
+    command "$auth" "$target" "$@"
   else
     command /usr/bin/ssh "$target" "$@"
   fi

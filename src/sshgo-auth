@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""Run OpenSSH with a private askpass channel and one credential per SSH hop."""
+
+import ctypes
+import getpass
+import os
+from pathlib import Path
+import re
+import select
+import shlex
+import shutil
+import socket
+import socketserver
+import subprocess
+import sys
+import tempfile
+import threading
+import warnings
+
+
+SSH = "/usr/bin/ssh"
+AUTH_LOG = "sshconnect2.c:ssh_userauth2():*"
+HERE = Path(__file__).resolve().parent
+SOCKET_VAR = "SSHGO_AUTH_SOCKET"
+PROMPT_VAR = "SSHGO_AUTH_PROMPT"
+DEPTH_VAR = "SSHGO_AUTH_DEPTH"
+
+
+class MacKeychain:
+    """Read and update the same login Keychain items as previous SSHGo versions."""
+
+    def __init__(self):
+        self.api = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        cf.CFRelease.restype = None
+        self.release = cf.CFRelease
+
+        ref = ctypes.c_void_p
+        size = ctypes.c_uint32
+        data = ctypes.c_char_p
+        self.api.SecKeychainSetUserInteractionAllowed.argtypes = [ctypes.c_bool]
+        self.api.SecKeychainSetUserInteractionAllowed(False)
+        self.find = self.api.SecKeychainFindGenericPassword
+        self.find.argtypes = [ref, size, data, size, data, ctypes.POINTER(size),
+                              ctypes.POINTER(ref), ctypes.POINTER(ref)]
+        self.free = self.api.SecKeychainItemFreeContent
+        self.free.argtypes = [ref, ref]
+        self.add = self.api.SecKeychainAddGenericPassword
+        self.add.argtypes = [ref, size, data, size, data, size, data, ctypes.POINTER(ref)]
+        self.modify = self.api.SecKeychainItemModifyAttributesAndData
+        self.modify.argtypes = [ref, ref, size, data]
+
+    def lookup(self, service, account):
+        value = ctypes.c_void_p()
+        length = ctypes.c_uint32()
+        status = self.find(None, len(service), service, len(account), account,
+                           ctypes.byref(length), ctypes.byref(value), None)
+        if status == 0:
+            try:
+                return ctypes.string_at(value, length.value)
+            finally:
+                self.free(None, value)
+        if status == -25300:  # errSecItemNotFound
+            return None
+
+        # Older items may grant access to the security CLI rather than this process.
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-a", account, "-s", service, "-w"],
+            capture_output=True, check=False,
+        )
+        return result.stdout.removesuffix(b"\n") if result.returncode == 0 else None
+
+    def store(self, service, account, secret):
+        # Updating an item created by another application can require macOS consent.
+        self.api.SecKeychainSetUserInteractionAllowed(True)
+        try:
+            return self.write_item(service, account, secret)
+        finally:
+            self.api.SecKeychainSetUserInteractionAllowed(False)
+
+    def write_item(self, service, account, secret):
+        item = ctypes.c_void_p()
+        status = self.find(None, len(service), service, len(account), account,
+                           None, None, ctypes.byref(item))
+        if status == -25300:
+            status = self.add(None, len(service), service, len(account), account,
+                              len(secret), secret, None)
+            if status != -25299:  # errSecDuplicateItem, another login created it
+                return status == 0
+            status = self.find(None, len(service), service, len(account), account,
+                               None, None, ctypes.byref(item))
+        if status != 0:
+            return False
+        try:
+            return self.modify(item, None, len(secret), secret) == 0
+        finally:
+            self.release(item)
+
+
+class SecretService:
+    def __init__(self, executable):
+        self.executable = executable
+
+    def lookup(self, service, account):
+        result = subprocess.run(
+            [self.executable, "lookup", "service", service, "account", account],
+            capture_output=True, check=False,
+        )
+        return result.stdout.removesuffix(b"\n") if result.returncode == 0 else None
+
+    def store(self, service, account, secret):
+        result = subprocess.run(
+            [self.executable, "store", b"--label=SSHGo: " + account + b" " + service,
+             "service", service, "account", account],
+            input=secret, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        return result.returncode == 0
+
+
+class Credential(socketserver.BaseRequestHandler):
+    def handle(self):
+        with self.request.makefile("rb") as stream:
+            operation = stream.read(1)
+            state = self.server
+            if operation == b"L" and not state.tried_saved:
+                state.tried_saved = True
+                try:
+                    secret = state.backend.lookup(state.service, state.account)
+                except OSError:
+                    return
+                if usable_password(secret):
+                    self.request.sendall(secret)
+            elif operation == b"S":
+                secret = stream.read(1024)
+                if usable_password(secret):
+                    state.pending = secret
+
+
+def usable_password(secret):
+    # OpenSSH's askpass reader accepts up to 1023 bytes and stops at CR/LF.
+    return secret and len(secret) < 1024 and not any(c in secret for c in (b"\0", b"\n", b"\r"))
+
+
+def exchange(operation):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.connect(os.environ[SOCKET_VAR])
+        stream.sendall(operation)
+        stream.shutdown(socket.SHUT_WR)
+        with stream.makefile("rb") as response:
+            return response.read(1024)
+
+
+def askpass(prompt):
+    if not prompt:
+        return 1
+    interactive_password = (
+        prompt == os.environ.get(PROMPT_VAR)
+        and not os.environ.get("SSH_ASKPASS_PROMPT")
+    )
+    if interactive_password:
+        try:
+            saved = exchange(b"L")
+        except OSError:
+            saved = None
+        if usable_password(saved):
+            sys.stdout.buffer.write(saved)
+            return 0
+
+    try:
+        with open("/dev/tty", "w", encoding="utf-8", errors="surrogateescape") as tty:
+            if (
+                os.environ.get("SSH_ASKPASS_PROMPT") == "confirm"
+                or prompt.startswith("The authenticity of host ")
+                or prompt.startswith("Please type 'yes'")
+            ):
+                tty.write(prompt)
+                tty.flush()
+                with open("/dev/tty", encoding="utf-8", errors="surrogateescape") as terminal_input:
+                    answer = terminal_input.readline().rstrip("\r\n")
+            else:
+                label = prompt
+                if interactive_password:
+                    label = prompt.rstrip() + " (saved on successful login) "
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", getpass.GetPassWarning)
+                    answer = getpass.getpass(label, stream=tty)
+    except (OSError, EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+        return 1
+
+    answer = os.fsencode(answer)
+    if interactive_password and usable_password(answer):
+        try:
+            exchange(b"S" + answer)
+        except OSError:
+            pass
+    sys.stdout.buffer.write(answer)
+    return 0
+
+
+def parsed_options(arguments):
+    """Read flags that affect the wrapper while leaving all arguments with SSH."""
+    options = {}
+    forwarded = []
+    destination = False
+    iterator = iter(arguments)
+    for argument in iterator:
+        forwarded.append(argument)
+        if argument == "--":
+            if destination:
+                break
+            host = next(iterator, None)
+            if host is not None:
+                destination = True
+                forwarded.append(host)
+            continue
+        if not argument.startswith("-") or argument == "-":
+            if destination:
+                break
+            destination = True
+            continue
+        for index, option in enumerate(argument[1:], start=1):
+            if option in "BbcDEeFIiJLlmOopPQRSWw":
+                value = argument[index + 1:]
+                if not value:
+                    value = next(iterator, "")
+                    forwarded.append(value)
+                options[option] = value
+                if option == "J":
+                    # A second -J conflicts with the wrapper's ProxyCommand.
+                    # A lower-priority ProxyJump setting is ignored by OpenSSH.
+                    if not argument[index + 1:]:
+                        forwarded.pop()
+                    forwarded.pop()
+                    if index > 1:
+                        forwarded.append(argument[:index])
+                    forwarded.extend(["-o", f"ProxyJump={value}"])
+                break
+            options[option] = True
+    forwarded.extend(iterator)
+    return options, forwarded
+
+
+def effective_config(arguments):
+    result = subprocess.run(
+        [SSH, "-G", "-o", "LogLevel=ERROR", *arguments],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+    )
+    if result.returncode:
+        return {}
+    return dict(
+        line.split(" ", 1) for line in os.fsdecode(result.stdout).splitlines() if " " in line
+    )
+
+
+def jump_proxy(settings, flags, depth):
+    route = settings["proxyjump"].split(",")
+    if any(not hop or hop.startswith("-") for hop in route) or depth >= 16:
+        return None
+    destination = settings["hostname"]
+    port = settings["port"]
+    if not re.fullmatch(r"[A-Za-z0-9._:-]+", destination) or not port.isdecimal():
+        return None
+    last = route.pop()
+    # Let OpenSSH parse user, port, IPv6 brackets, and URI syntax.
+    if not last.startswith("ssh://") and (":" in last or last.endswith("]")):
+        last = "ssh://" + last
+    command = [sys.executable, str(HERE / "sshgo-auth"), "--transport"]
+    if "F" in flags:
+        command += ["-F", flags["F"]]
+    if route:
+        command += ["-o", "ProxyJump=" + ",".join(route)]
+    if "v" in flags:
+        command += ["-v"]
+    command += ["-W", f"[{destination}]:{port}", "--", last]
+    # OpenSSH expands percent tokens before invoking the shell.
+    return shlex.join(command).replace("%", "%%")
+
+
+def auth_events(fd, child, state):
+    # Only the client's own source-tagged diagnostic can confirm which method worked.
+    marker = re.compile(
+        rb'^sshconnect2\.c:ssh_userauth2\(\):\d+ \(bin=[^,\r\n]+, pid='
+        + str(child.pid).encode()
+        + rb'\): Authenticated to .+ using "([^"\r\n]+)"\.$'
+    )
+    buffer = b""
+    while True:
+        if not select.select([fd], [], [], 0.1)[0]:
+            if child.poll() is not None:
+                break
+            continue
+        data = os.read(fd, 8192)
+        if not data:
+            break
+        lines = (buffer + data).split(b"\n")
+        buffer = lines.pop()
+        for line in lines:
+            event = marker.fullmatch(line.rstrip(b"\r"))
+            if not event:
+                sys.stderr.buffer.write(line + b"\n")
+                sys.stderr.buffer.flush()
+                continue
+            if event[1] == b"password" and state.pending is not None:
+                try:
+                    stored = state.backend.store(state.service, state.account, state.pending)
+                except OSError:
+                    stored = False
+                if not stored:
+                    print("sshgo: login succeeded, but the password could not be saved to the keyring.",
+                          file=sys.stderr)
+            state.pending = None
+
+
+def run_managed(arguments, settings, proxy, backend, depth):
+    with tempfile.TemporaryDirectory(prefix="sshgo-", dir="/tmp") as directory:
+        path = Path(directory)
+        fifo = path / "ssh-log"
+        os.mkfifo(fifo, 0o600)
+        # Keep the FIFO open until the SSH process exits, including before it opens -E.
+        keep_open = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        reader = os.open(fifo, os.O_RDONLY)
+        try:
+            with socketserver.UnixStreamServer(str(path / "auth"), Credential) as state:
+                state.backend = backend
+                state.service = os.fsencode(f"sshgo:ssh:{settings['hostname']}:{settings['port']}")
+                state.account = os.fsencode(settings["user"])
+                state.tried_saved = False
+                state.pending = None
+                thread = threading.Thread(target=state.serve_forever, kwargs={"poll_interval": 0.05},
+                                          daemon=True)
+                thread.start()
+                try:
+                    env = dict(os.environ)
+                    env.update({
+                        "SSH_ASKPASS": str(HERE / "sshgo-askpass"),
+                        "SSH_ASKPASS_REQUIRE": "force",
+                        "SSHGO_AUTH_PYTHON": sys.executable,
+                        SOCKET_VAR: str(path / "auth"),
+                        PROMPT_VAR: f"{settings['user']}@{settings.get('hostkeyalias', settings['hostname'])}'s password: ",
+                        DEPTH_VAR: str(depth + 1),
+                    })
+                    env.pop("SSH_ASKPASS_PROMPT", None)
+                    host_check = settings.get("stricthostkeychecking")
+                    if host_check not in {"true", "yes"}:
+                        host_check = "ask"
+                    else:
+                        host_check = "yes"
+                    verbose = settings.get("logverbose", "")
+                    if not verbose or verbose == "none":
+                        verbose = AUTH_LOG
+                    else:
+                        verbose = AUTH_LOG + "," + verbose
+                    command = [SSH, "-E", str(fifo), "-o", f"LogVerbose={verbose}",
+                               "-o", f"StrictHostKeyChecking={host_check}",
+                               "-o", "NoHostAuthenticationForLocalhost=no"]
+                    if "preferredauthentications" not in settings:
+                        command += ["-o", "PreferredAuthentications="
+                                    "gssapi-with-mic,hostbased,publickey,password,keyboard-interactive"]
+                    if proxy:
+                        command += ["-o", "ProxyUseFdpass=no", "-o", f"ProxyCommand={proxy}"]
+                    with subprocess.Popen([*command, *arguments], env=env) as child:
+                        auth_events(reader, child, state)
+                        status = child.wait()
+                        return status if status >= 0 else 128 - status
+                finally:
+                    state.shutdown()
+                    thread.join()
+        finally:
+            os.close(reader)
+            os.close(keep_open)
+
+
+def transport(arguments):
+    flags, forwarded = parsed_options(arguments)
+    depth = int(os.environ.get(DEPTH_VAR, "0"))
+    settings = effective_config(arguments) if not flags.keys() & {"E", "G", "O", "Q", "V", "y"} else {}
+    if (
+        not {"hostname", "port", "user"} <= settings.keys()
+        or settings.get("batchmode") == "yes"
+        or settings.get("proxycommand") not in {None, "none"}
+    ):
+        os.execv(SSH, [SSH, *arguments])
+    proxy = None
+    if settings.get("proxyjump") not in {None, "none"}:
+        proxy = jump_proxy(settings, flags, depth)
+        if proxy is None:
+            raise ValueError("Unsupported or recursive ProxyJump route. Try sshgo --manual HOST.")
+    if sys.platform == "darwin":
+        backend = MacKeychain()
+    elif executable := shutil.which("secret-tool"):
+        backend = SecretService(executable)
+    else:
+        os.execv(SSH, [SSH, *arguments])
+    return run_managed(forwarded if proxy else arguments, settings, proxy, backend, depth)
+
+
+if __name__ == "__main__":
+    try:
+        if sys.argv[1:2] == ["--askpass"]:
+            sys.exit(askpass(sys.argv[2]))
+        arguments = sys.argv[2:] if sys.argv[1:2] == ["--transport"] else sys.argv[1:]
+        sys.exit(transport(arguments))
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except (OSError, ValueError) as error:
+        print(f"sshgo: {error}", file=sys.stderr)
+        sys.exit(1)

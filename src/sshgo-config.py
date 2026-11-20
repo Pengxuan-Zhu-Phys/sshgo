@@ -14,7 +14,7 @@ except ImportError:
 
 
 FORMAT = "sshgo-config-v1"
-SUFFIX = ".remote-root"
+DIRECTORY_SETTINGS = {"remote_roots": ".remote-root", "upload_dirs": ".upload-dir"}
 MAX_BYTES = 1024 * 1024
 SAFE_NAME_BYTES = b"abcdefghijklmnopqrstuvwxyz0123456789._-"
 
@@ -56,19 +56,19 @@ def has_control_chars(value):
     return any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value)
 
 
-def host_filename(alias):
+def host_filename(alias, suffix):
     if not isinstance(alias, str) or not alias or alias.startswith("-") or has_control_chars(alias):
-        raise ValueError("Invalid SSH alias in remote_roots.")
+        raise ValueError("Invalid SSH alias in directory settings.")
     # Match the byte escaping in _sshgo_host_config_path.
     key = "".join(chr(byte) if byte in SAFE_NAME_BYTES else f"%{byte:02x}" for byte in alias.encode("utf-8"))
-    if len(key) + len(SUFFIX) > 255:
-        raise ValueError("SSH alias is too long for a remote-root setting.")
-    return key + SUFFIX
+    if len(key) + len(suffix) > 255:
+        raise ValueError("SSH alias is too long for a directory setting.")
+    return key + suffix
 
 
-def validate_root(value):
+def validate_directory(value):
     if not isinstance(value, str) or not value.startswith("/") or has_control_chars(value):
-        raise ValueError("Every remote root must be an absolute path on the remote host.")
+        raise ValueError("Every directory setting must be an absolute path on the remote host.")
 
 
 def validate_ssh_config(value):
@@ -92,40 +92,55 @@ def write_new(path, content):
             temporary.unlink()
 
 
+def read_directories(hosts, suffix):
+    directories = {}
+    for path in sorted(hosts.glob(f"*{suffix}")):
+        alias = unquote(path.name[:-len(suffix)], errors="strict")
+        if path.is_symlink() or path.name != host_filename(alias, suffix):
+            raise ValueError(f"Invalid directory configuration file: {path}")
+        value = read_text(path).rstrip("\n")
+        validate_directory(value)
+        directories[alias] = value
+    return directories
+
+
 def export_config(bundle, ssh_config, hosts):
     config = read_text(ssh_config) if os.path.lexists(ssh_config) else None
     if config is not None:
         validate_ssh_config(config)
-    roots = {}
-    for path in sorted(hosts.glob(f"*{SUFFIX}")):
-        alias = unquote(path.name[:-len(SUFFIX)], errors="strict")
-        if path.is_symlink() or path.name != host_filename(alias):
-            raise ValueError(f"Invalid remote-root configuration file: {path}")
-        value = read_text(path).rstrip("\n")
-        validate_root(value)
-        roots[alias] = value
+    roots = read_directories(hosts, DIRECTORY_SETTINGS["remote_roots"])
+    uploads = read_directories(hosts, DIRECTORY_SETTINGS["upload_dirs"])
     data = {"format": FORMAT, "ssh_config": SSHConfig(config) if config is not None else None, "remote_roots": roots}
+    if uploads:
+        data["upload_dirs"] = uploads
     payload = yaml.dump(data, Dumper=ConfigDumper, allow_unicode=True, sort_keys=False).encode("utf-8")
     if len(payload) > MAX_BYTES:
         raise ValueError("The YAML export would exceed 1 MiB.")
     write_new(bundle, payload)
-    print(f"Exported SSH configuration and {len(roots)} remote-root settings to {bundle}")
+    print(f"Exported SSH configuration and {len(roots) + len(uploads)} directory settings to {bundle}")
 
 
 def import_config(bundle, ssh_config, hosts):
     data = yaml.load(read_text(bundle), Loader=ConfigLoader)
-    if not isinstance(data, dict) or set(data) != {"format", "ssh_config", "remote_roots"} or data["format"] != FORMAT:
+    required = {"format", "ssh_config", "remote_roots"}
+    if (
+        not isinstance(data, dict)
+        or not required <= data.keys() <= required | DIRECTORY_SETTINGS.keys()
+        or data["format"] != FORMAT
+    ):
         raise ValueError("Expected a YAML configuration exported by sshgo.")
-    config, roots = data["ssh_config"], data["remote_roots"]
-    if not isinstance(roots, dict):
-        raise ValueError("remote_roots must be a mapping of aliases to paths.")
+    config = data["ssh_config"]
     files = {}
     if config is not None:
         validate_ssh_config(config)
         files[ssh_config] = config
-    for alias, value in roots.items():
-        validate_root(value)
-        files[hosts / host_filename(alias)] = value + "\n"
+    for field, suffix in DIRECTORY_SETTINGS.items():
+        directories = data.get(field, {})
+        if not isinstance(directories, dict):
+            raise ValueError(f"{field} must be a mapping of aliases to paths.")
+        for alias, value in directories.items():
+            validate_directory(value)
+            files[hosts / host_filename(alias, suffix)] = value + "\n"
 
     pending = {}
     for path, content in files.items():

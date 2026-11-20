@@ -27,38 +27,39 @@ Each explicit alias gets its own entry in the picker and `--list`. For example, 
 sshgo                         # Pick a server
 sshgo --list                  # List servers
 sshgo example                 # Connect
-sshgo show example            # Show connection settings and the default tool directory
+sshgo show example            # Show connection settings and default directories
 sshgo doctor example          # Diagnose a connection without prompting
 sshgo session example         # Open or resume the remote tmux session named work
 sshgo example --screen list    # List remote tmux sessions
 sshgo tunnel example 8888     # Forward remote port 8888 to local port 8888
 sshgo setup example remote-root /scratch/your_username/tools
+sshgo setup example upload-dir /scratch/your_username/incoming
 sshgo setup example warpify --dry-run
 sshgo --download example /remote/file ~/Downloads/
 sshgo --upload example ./file /remote/directory/
 sshgo --speed example         # Download 10 MiB of test data
 sshgo --speed example 100     # Change the test size in MiB
-sshgo export ./sshgo.yaml     # Save SSH config and per-host tool paths
+sshgo export ./sshgo.yaml     # Save SSH config and per-host directories
 sshgo import ./sshgo.yaml     # Restore them on this machine
 sshgo --version               # Show the installed version
 sshgo --help
 ```
 
-`sshgo show HOST` displays selected settings resolved by OpenSSH, such as the hostname, user, port, jump host and identity file paths. It also displays SSHGo's saved `RemoteRoot` and any `PasswordFrom` alias. It does not display passwords, key contents or arbitrary configured commands. To connect to an alias that shares a command name, put `--` before the alias, as in `sshgo -- session`.
+`sshgo show HOST` displays selected settings resolved by OpenSSH, such as the hostname, user, port, jump host and identity file paths. It also displays SSHGo's saved `RemoteRoot` and `UploadDir`. It does not display passwords, key contents or arbitrary configured commands. To connect to an alias that shares a command name, put `--` before the alias, as in `sshgo -- session`.
 
-Transfers support files and directories. Existing destination files can be overwritten. `scp -r` follows symbolic links when traversing directories. Quote paths containing spaces or shell metacharacters. Download destinations default to the current local directory; upload destinations default to the remote home directory.
+Transfers support files and directories. Existing destination files can be overwritten. `scp -r` follows symbolic links when traversing directories. Quote paths containing spaces or shell metacharacters. Downloads default to the current local directory.
+
+Use `sshgo setup HOST upload-dir DIR` to save an existing absolute directory on the remote host. `sshgo --upload HOST LOCAL` uses that directory if set and otherwise uses the remote home. An explicit `REMOTE` argument takes precedence. Run `sshgo setup HOST upload-dir` to view the setting or append `--clear` to remove it.
 
 If you already have a shell function or alias named `sshgo`, it may take precedence over the installed executable. Remove that existing definition or call the executable by its installed path when migrating.
 
 ## Passwords and host keys
 
-SSH keys and normal interactive SSH password prompts work without a keyring. `sshgo --set-password example` optionally saves the server password in macOS Keychain, or on Linux in a desktop Secret Service keyring through `secret-tool` (package `libsecret-tools`). Linux requires an available, unlocked Secret Service session; on headless systems, use SSH keys or enter the password interactively. `sshgo --forget-password example` deletes the saved password.
+Run `sshgo HOST` to log in. If a verified host asks for an SSH password, SSHGo tries its saved password once. With a terminal available, you can enter a password when no saved password works. SSHGo saves the new password only after OpenSSH confirms password authentication. It uses macOS Keychain or Linux Secret Service through `secret-tool` (package `libsecret-tools`). Without a Linux keyring, OpenSSH handles passwords interactively.
 
-When using a saved password, SSHGo requires a previously verified server host key. For a new host, run `sshgo --manual example`, verify its host fingerprint and accept it before using the saved password.
+For a standard `ProxyJump` route, SSHGo applies this behavior to each jump host and the destination separately. Each record uses the SSH user, hostname, and port. Existing keyring entries with matching addresses are reused. One-time codes and private-key passphrases remain interactive. Custom `ProxyCommand` programs handle their own authentication.
 
-For a connection where both hops use the same SSH user and password, run `sshgo setup HOST password-from SOURCE` to reuse the existing keyring entry for `SOURCE`. `HOST` must use a single named `ProxyJump`. The jump must connect directly using the source's port and either its hostname or a `HostKeyAlias` matching that hostname. Both hops require trusted host keys. The setting is local to `HOST` and stores only the source alias. Remove it with `sshgo setup HOST password-from --clear`.
-
-Put `--no-keyring` first to skip saved passwords for a single operation, for example `sshgo --no-keyring --download example /remote/file`. This also works for connections, uploads and speed tests, and lets OpenSSH handle authentication normally.
+Use `sshgo --manual HOST` for a connection without reading or saving passwords in the keyring. The same option works before transfer and tunnel commands. OpenSSH prompts to verify new host keys before password authentication.
 
 The optional speed test uses `pv` and measures remote-to-local SSH throughput without writing the test data to disk. A test only succeeds if the requested byte count arrives. Measurements include SSH transport overhead.
 
@@ -66,7 +67,7 @@ The optional speed test uses `pv` and measures remote-to-local SSH throughput wi
 
 `sshgo doctor HOST` resolves the OpenSSH configuration and tests a fresh direct connection by running `true`. It checks connectivity, verifies the server host key, and attempts non-interactive authentication. It does not try saved passwords or update `known_hosts`. For hosts configured with `ProxyJump` or `ProxyCommand`, it reports the proxy setting and skips the live probe, since the proxy can use its own authentication and trust settings.
 
-`sshgo tunnel HOST REMOTE_PORT [LOCAL_PORT]` forwards a port on the server's loopback interface to a port on this machine. The local port defaults to the remote port. For example, if Jupyter is running on `thread` at `127.0.0.1:8888`, run `sshgo tunnel thread 8888 8889` and open `http://127.0.0.1:8889`. The tunnel runs in the foreground. Press Ctrl+C to stop it. Use `sshgo --no-keyring tunnel HOST REMOTE_PORT` to leave authentication to OpenSSH.
+`sshgo tunnel HOST REMOTE_PORT [LOCAL_PORT]` forwards a port on the server's loopback interface to a port on this machine. The local port defaults to the remote port. For example, if Jupyter is running on `thread` at `127.0.0.1:8888`, run `sshgo tunnel thread 8888 8889` and open `http://127.0.0.1:8889`. The tunnel runs in the foreground. Press Ctrl+C to stop it. Use `sshgo --manual tunnel HOST REMOTE_PORT` to leave authentication to OpenSSH.
 
 ## Resume a remote session
 
@@ -115,16 +116,16 @@ If a host alias is named `setup`, connect with `sshgo -- setup`.
 
 Run `sshgo export ./sshgo.yaml`, transfer the file privately, then run `sshgo import ./sshgo.yaml` on the new machine. These commands require local Python 3 with PyYAML. On Debian or Ubuntu, install `python3-yaml`. On macOS, install PyYAML in the Python environment used by `sshgo`, such as an active virtual environment.
 
-The YAML contains `~/.ssh/config` and SSHGo's per-alias `remote-root` settings. Private keys, passwords in the system keyring, `password-from` settings, and `known_hosts` are separate. Treat the export as private because it contains SSH configuration text, including any sensitive values entered directly in that file. `Include` files need to be migrated separately.
+The YAML contains `~/.ssh/config` and SSHGo's per-alias `remote-root` and `upload-dir` settings. Private keys, passwords in the system keyring, and `known_hosts` are separate. Treat the export as private because it contains SSH configuration text, including any sensitive values entered directly in that file. `Include` files need to be migrated separately.
 
 Export requires a new filename. Import accepts identical local files and stops on conflicts before writing configuration. Use a YAML backup you trust, since the restored OpenSSH configuration will be used for future connections.
 
 ## Prepare a Homebrew tap
 
-After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.3.tar.gz`. Then render a formula using the exact downloaded archive:
+After creating the matching GitHub tag, download its source archive from `https://github.com/Pengxuan-Zhu-Phys/sshgo/archive/refs/tags/v1.0.4.tar.gz`. Then render a formula using the exact downloaded archive:
 
 ```sh
-python3 scripts/render-homebrew-formula.py 1.0.3 sshgo-1.0.3.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
+python3 scripts/render-homebrew-formula.py 1.0.4 sshgo-1.0.4.tar.gz --output /path/to/homebrew-tap/Formula/sshgo.rb
 ```
 
 Review and publish the formula in your tap. Once published, users can install it with `brew install Pengxuan-Zhu-Phys/tap/sshgo` if the tap repository is named `homebrew-tap`. The renderer embeds the archive's SHA-256; use the archive downloaded from the tag, not a locally generated substitute.

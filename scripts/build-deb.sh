@@ -17,6 +17,7 @@ files = {
     'usr/bin/sshgo': (root / 'src/sshgo', 0o755),
     'usr/lib/sshgo/sshgo.zsh': (root / 'src/sshgo.zsh', 0o644),
     'usr/lib/sshgo/sshgo-config.py': (root / 'src/sshgo-config.py', 0o644),
+    'usr/lib/sshgo/sshgo-auth': (root / 'src/sshgo-auth', 0o755),
     'usr/lib/sshgo/sshgo-askpass': (root / 'src/sshgo-askpass', 0o755),
     'usr/share/doc/sshgo/README.md': (root / 'README.md', 0o644),
     'usr/share/doc/sshgo/copyright': (root / 'LICENSE', 0o644),
